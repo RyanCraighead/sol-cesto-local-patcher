@@ -25,7 +25,6 @@ TestResults/
 *.bmp
 *.gif
 patch_solcesto_gold.ps1
-SolCesto_gold_probe.ct
 
 # OS/editor files
 .DS_Store
