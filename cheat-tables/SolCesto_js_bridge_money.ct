@@ -1,0 +1,391 @@
+<?xml version="1.0" encoding="utf-8"?>
+<CheatTable CheatEngineTableVersion="45">
+  <CheatEntries>
+    <CheatEntry>
+      <ID>0</ID>
+      <Description>"Attach to running SolCesto.exe"</Description>
+      <VariableType>Auto Assembler Script</VariableType>
+      <AssemblerScript><![CDATA[[ENABLE]
+{$lua}
+if syntaxcheck then return end
+SolCestoBridge.attach()
+{$asm}
+[DISABLE]
+]]></AssemblerScript>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>1</ID>
+      <Description>"Probe JS bridge"</Description>
+      <VariableType>Auto Assembler Script</VariableType>
+      <AssemblerScript><![CDATA[[ENABLE]
+{$lua}
+if syntaxcheck then return end
+SolCestoBridge.probe()
+{$asm}
+[DISABLE]
+]]></AssemblerScript>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>2</ID>
+      <Description>"Set gold once through JS runtime"</Description>
+      <VariableType>Auto Assembler Script</VariableType>
+      <AssemblerScript><![CDATA[[ENABLE]
+{$lua}
+if syntaxcheck then return end
+SolCestoBridge.setMoneyPrompt(false)
+{$asm}
+[DISABLE]
+]]></AssemblerScript>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>3</ID>
+      <Description>"Lock gold through JS runtime"</Description>
+      <VariableType>Auto Assembler Script</VariableType>
+      <AssemblerScript><![CDATA[[ENABLE]
+{$lua}
+if syntaxcheck then return end
+SolCestoBridge.setMoneyPrompt(true)
+{$asm}
+[DISABLE]
+{$lua}
+if syntaxcheck then return end
+SolCestoBridge.stopLock()
+{$asm}
+]]></AssemblerScript>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>4</ID>
+      <Description>"Stop JS-side money lock"</Description>
+      <VariableType>Auto Assembler Script</VariableType>
+      <AssemblerScript><![CDATA[[ENABLE]
+{$lua}
+if syntaxcheck then return end
+SolCestoBridge.stopLock()
+{$asm}
+[DISABLE]
+]]></AssemblerScript>
+    </CheatEntry>
+  </CheatEntries>
+  <UserdefinedSymbols/>
+  <LuaScript><![CDATA[
+-- Sol Cesto JS runtime bridge table
+-- Method 2: ask the already-running NW.js/Chromium runtime to evaluate JS.
+-- This table still starts from Cheat Engine attached to SolCesto.exe.
+--
+-- Important: a running NW.js process must expose a DevTools/CDP port for this
+-- pure-CT version to reach Runtime.evaluate. If no port is open, the table will
+-- report NO_CDP instead of patching files or relaunching the game.
+
+SolCestoBridge = SolCestoBridge or {}
+
+SolCestoBridge.processName = "SolCesto.exe"
+SolCestoBridge.defaultTarget = "999"
+SolCestoBridge.tempBase = "solcesto_ce_js_bridge"
+
+local B = SolCestoBridge
+
+local function log(msg)
+  print("[SolCesto bridge] " .. tostring(msg))
+end
+
+local function asNumber(text, name)
+  local n = tonumber(text)
+  if not n then
+    error(name .. " must be a number.")
+  end
+  return math.floor(n)
+end
+
+local function writeText(path, text)
+  local f, err = io.open(path, "wb")
+  if not f then error("Could not write " .. path .. ": " .. tostring(err)) end
+  f:write(text)
+  f:close()
+end
+
+local function readText(path)
+  local f = io.open(path, "rb")
+  if not f then return nil end
+  local text = f:read("*a")
+  f:close()
+  return text
+end
+
+local function quoteArg(path)
+  return '"' .. tostring(path):gsub('"', '\\"') .. '"'
+end
+
+local function tempPath(name)
+  local root = os.getenv("TEMP") or os.getenv("TMP") or "."
+  return root .. "\\" .. name
+end
+
+function B.attach()
+  local opened = getOpenedProcessID()
+  if opened and opened ~= 0 then
+    log("Using currently attached process PID " .. tostring(opened) .. ".")
+    return true
+  end
+
+  local pid = getProcessIDFromProcessName(B.processName)
+  if not pid or pid == 0 then
+    error("Could not find " .. B.processName .. ". Start Sol Cesto, then attach/run this again.")
+  end
+
+  openProcess(pid)
+  log("Attached to " .. B.processName .. " PID " .. tostring(pid) .. ".")
+  return true
+end
+
+local powershellBridge = [=[
+param(
+  [string]$PayloadPath,
+  [string]$OutPath
+)
+
+$ErrorActionPreference = 'Stop'
+
+function Finish([string]$Text, [int]$Code) {
+  Set-Content -LiteralPath $OutPath -Value $Text -Encoding UTF8
+  exit $Code
+}
+
+try {
+  $expression = Get-Content -LiteralPath $PayloadPath -Raw
+  $ports = @(9222..9232)
+  $targets = $null
+  $selectedPort = $null
+
+  foreach ($port in $ports) {
+    try {
+      $url = "http://127.0.0.1:$port/json"
+      $probe = Invoke-RestMethod -Uri $url -TimeoutSec 1
+      if ($null -ne $probe) {
+        $targets = @($probe)
+        $selectedPort = $port
+        break
+      }
+    } catch {
+    }
+  }
+
+  if ($null -eq $targets -or $targets.Count -eq 0) {
+    Finish "NO_CDP: no DevTools/CDP endpoint found on 127.0.0.1 ports 9222-9232 for the already-running game." 2
+  }
+
+  $target = $targets |
+    Where-Object {
+      $_.webSocketDebuggerUrl -and
+      (
+        $_.title -match 'Sol|Cesto|C3|Construct' -or
+        $_.url -match 'package|index|c3runtime|construct'
+      )
+    } |
+    Select-Object -First 1
+
+  if ($null -eq $target) {
+    $target = $targets | Where-Object { $_.webSocketDebuggerUrl } | Select-Object -First 1
+  }
+
+  if ($null -eq $target -or -not $target.webSocketDebuggerUrl) {
+    Finish ("NO_TARGET: CDP port " + $selectedPort + " responded, but no page target with a WebSocket debugger URL was found.") 3
+  }
+
+  $ct = [Threading.CancellationToken]::None
+  $ws = [System.Net.WebSockets.ClientWebSocket]::new()
+  $connectTask = $ws.ConnectAsync([Uri]$target.webSocketDebuggerUrl, $ct)
+  if (-not $connectTask.Wait(3000)) {
+    Finish "CONNECT_TIMEOUT: found CDP target but WebSocket connect timed out." 4
+  }
+
+  $request = @{
+    id = 1
+    method = 'Runtime.evaluate'
+    params = @{
+      expression = $expression
+      awaitPromise = $true
+      returnByValue = $true
+    }
+  }
+
+  $json = $request | ConvertTo-Json -Depth 20 -Compress
+  $bytes = [Text.Encoding]::UTF8.GetBytes($json)
+  $sendSegment = [System.ArraySegment[byte]]::new($bytes, 0, $bytes.Length)
+  $sendTask = $ws.SendAsync($sendSegment, [System.Net.WebSockets.WebSocketMessageType]::Text, $true, $ct)
+  if (-not $sendTask.Wait(3000)) {
+    Finish "SEND_TIMEOUT: connected to CDP target but request timed out." 5
+  }
+
+  $buffer = New-Object byte[] 65536
+  $ms = [System.IO.MemoryStream]::new()
+
+  while ($true) {
+    $receiveSegment = [System.ArraySegment[byte]]::new($buffer, 0, $buffer.Length)
+    $receiveTask = $ws.ReceiveAsync($receiveSegment, $ct)
+    if (-not $receiveTask.Wait(5000)) {
+      Finish "RECV_TIMEOUT: CDP did not return a Runtime.evaluate response." 6
+    }
+
+    $result = $receiveTask.Result
+    if ($result.Count -gt 0) {
+      $ms.Write($buffer, 0, $result.Count)
+    }
+    if ($result.EndOfMessage) {
+      break
+    }
+  }
+
+  $responseText = [Text.Encoding]::UTF8.GetString($ms.ToArray())
+  try { $ws.Dispose() } catch {}
+  Finish ("CDP_PORT=" + $selectedPort + "`nTARGET=" + $target.title + "`n" + $responseText) 0
+} catch {
+  Finish ("ERROR: " + $_.Exception.Message) 1
+}
+]=]
+
+local function buildApplyExpression(target)
+  return [=[
+(function(){
+  var value = ]=] .. tostring(target) .. [=[;
+  function getRuntime() {
+    var iface = window.c3_runtimeInterface;
+    if (!iface || !iface._localRuntime || !iface._localRuntime.GetIRuntime) return null;
+    return iface._localRuntime.GetIRuntime();
+  }
+  function firstInstance(rt, name) {
+    var cls = rt && rt.objects ? rt.objects[name] : null;
+    if (!cls) return null;
+    if (cls.getFirstInstance) return cls.getFirstInstance();
+    if (cls.getAllInstances) {
+      var all = cls.getAllInstances();
+      return all && all.length ? all[0] : null;
+    }
+    return null;
+  }
+  function setVars(inst, fields) {
+    var changed = [];
+    if (!inst || !inst.instVars) return changed;
+    for (var i = 0; i < fields.length; i++) {
+      var key = fields[i];
+      if (Object.prototype.hasOwnProperty.call(inst.instVars, key)) {
+        inst.instVars[key] = value;
+        changed.push(key);
+      }
+    }
+    return changed;
+  }
+  var rt = getRuntime();
+  if (!rt) return "runtime not ready";
+  var meta = firstInstance(rt, "metaProgression");
+  var hero = firstInstance(rt, "heros");
+  var metaChanged = setVars(meta, ["or", "or_ancien", "orEver"]);
+  var heroChanged = setVars(hero, ["or"]);
+  return "set value=" + value + " metaProgression=" + metaChanged.join(",") + " heros=" + heroChanged.join(",");
+})()
+]=]
+end
+
+local function buildLockExpression(target)
+  return [=[
+(function(){
+  var value = ]=] .. tostring(target) .. [=[;
+  function applySolCestoMoney() {
+    function getRuntime() {
+      var iface = window.c3_runtimeInterface;
+      if (!iface || !iface._localRuntime || !iface._localRuntime.GetIRuntime) return null;
+      return iface._localRuntime.GetIRuntime();
+    }
+    function firstInstance(rt, name) {
+      var cls = rt && rt.objects ? rt.objects[name] : null;
+      if (!cls) return null;
+      if (cls.getFirstInstance) return cls.getFirstInstance();
+      if (cls.getAllInstances) {
+        var all = cls.getAllInstances();
+        return all && all.length ? all[0] : null;
+      }
+      return null;
+    }
+    function setVars(inst, fields) {
+      if (!inst || !inst.instVars) return;
+      for (var i = 0; i < fields.length; i++) {
+        var key = fields[i];
+        if (Object.prototype.hasOwnProperty.call(inst.instVars, key)) inst.instVars[key] = value;
+      }
+    }
+    var rt = getRuntime();
+    if (!rt) return false;
+    setVars(firstInstance(rt, "metaProgression"), ["or", "or_ancien", "orEver"]);
+    setVars(firstInstance(rt, "heros"), ["or"]);
+    return true;
+  }
+  if (window.__solCestoMoneyLock) clearInterval(window.__solCestoMoneyLock);
+  applySolCestoMoney();
+  window.__solCestoMoneyLock = setInterval(applySolCestoMoney, 250);
+  return "money lock on value=" + value;
+})()
+]=]
+end
+
+local function buildStopExpression()
+  return [=[
+(function(){
+  if (window.__solCestoMoneyLock) {
+    clearInterval(window.__solCestoMoneyLock);
+    window.__solCestoMoneyLock = null;
+    return "money lock off";
+  }
+  return "money lock was not active";
+})()
+]=]
+end
+
+function B.runExpression(expression, showResult)
+  B.attach()
+
+  local psPath = tempPath(B.tempBase .. ".ps1")
+  local payloadPath = tempPath(B.tempBase .. "_payload.js")
+  local outPath = tempPath(B.tempBase .. "_out.txt")
+
+  writeText(psPath, powershellBridge)
+  writeText(payloadPath, expression)
+  writeText(outPath, "")
+
+  local cmd = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File " .. quoteArg(psPath) .. " -PayloadPath " .. quoteArg(payloadPath) .. " -OutPath " .. quoteArg(outPath)
+  log("Running CDP bridge command.")
+  os.execute(cmd)
+
+  local result = readText(outPath) or "No bridge output was written."
+  log(result)
+  if showResult ~= false then
+    showMessage(result)
+  end
+  return result
+end
+
+function B.probe()
+  local result = B.runExpression("(function(){ return 'Sol Cesto bridge probe: JS evaluated'; })()", true)
+  return result
+end
+
+function B.setMoneyPrompt(lock)
+  local targetText = inputQuery("Sol Cesto JS bridge", "Target gold value", B.defaultTarget)
+  if not targetText then return end
+  local target = asNumber(targetText, "Target gold")
+
+  local expression
+  if lock then
+    expression = buildLockExpression(target)
+  else
+    expression = buildApplyExpression(target)
+  end
+
+  return B.runExpression(expression, true)
+end
+
+function B.stopLock()
+  return B.runExpression(buildStopExpression(), true)
+end
+
+log("Loaded. This table uses CDP Runtime.evaluate if the already-running game exposes a DevTools port.")
+  ]]></LuaScript>
+</CheatTable>

@@ -1,0 +1,516 @@
+<?xml version="1.0" encoding="utf-8"?>
+<CheatTable CheatEngineTableVersion="45">
+  <CheatEntries>
+    <CheatEntry>
+      <ID>0</ID>
+      <Description>"Attach to running SolCesto.exe"</Description>
+      <VariableType>Auto Assembler Script</VariableType>
+      <AssemblerScript><![CDATA[[ENABLE]
+{$lua}
+if syntaxcheck then return end
+SolCestoHeap.attach()
+{$asm}
+[DISABLE]
+]]></AssemblerScript>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>1</ID>
+      <Description>"Set gold once - heap scan from current value"</Description>
+      <VariableType>Auto Assembler Script</VariableType>
+      <AssemblerScript><![CDATA[[ENABLE]
+{$lua}
+if syntaxcheck then return end
+SolCestoHeap.scanAndSet(false)
+{$asm}
+[DISABLE]
+]]></AssemblerScript>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>2</ID>
+      <Description>"Lock gold - heap scan from current value"</Description>
+      <VariableType>Auto Assembler Script</VariableType>
+      <AssemblerScript><![CDATA[[ENABLE]
+{$lua}
+if syntaxcheck then return end
+SolCestoHeap.scanAndSet(true)
+{$asm}
+[DISABLE]
+{$lua}
+if syntaxcheck then return end
+SolCestoHeap.stopLock()
+{$asm}
+]]></AssemblerScript>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>3</ID>
+      <Description>"Batch test gold candidates"</Description>
+      <VariableType>Auto Assembler Script</VariableType>
+      <AssemblerScript><![CDATA[[ENABLE]
+{$lua}
+if syntaxcheck then return end
+SolCestoHeap.batchTest()
+{$asm}
+[DISABLE]
+]]></AssemblerScript>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>4</ID>
+      <Description>"Stop lock and clear generated records"</Description>
+      <VariableType>Auto Assembler Script</VariableType>
+      <AssemblerScript><![CDATA[[ENABLE]
+{$lua}
+if syntaxcheck then return end
+SolCestoHeap.stopLock()
+SolCestoHeap.clearRecords()
+{$asm}
+[DISABLE]
+]]></AssemblerScript>
+    </CheatEntry>
+  </CheatEntries>
+  <UserdefinedSymbols/>
+  <LuaScript><![CDATA[
+-- Sol Cesto live heap money table
+-- Method 1: normal CE attached-process workflow.
+-- This does not patch files or launch the game. It scans writable process memory for
+-- JavaScript/V8 numeric representations, writes likely money slots, and can lock them.
+
+SolCestoHeap = SolCestoHeap or {}
+
+SolCestoHeap.processName = "SolCesto.exe"
+SolCestoHeap.recordPrefix = "SolCesto heap money"
+SolCestoHeap.defaultCurrent = "19"
+SolCestoHeap.defaultTarget = "999"
+SolCestoHeap.maxScanResultsPerKind = 20000
+SolCestoHeap.defaultCandidateLimit = 96
+SolCestoHeap.defaultBatchCandidates = 48
+SolCestoHeap.lockTimer = SolCestoHeap.lockTimer or nil
+SolCestoHeap.lockSlots = SolCestoHeap.lockSlots or {}
+SolCestoHeap.originals = SolCestoHeap.originals or {}
+
+local H = SolCestoHeap
+
+local function log(msg)
+  print("[SolCesto heap] " .. tostring(msg))
+end
+
+local function asNumber(text, name)
+  local n = tonumber(text)
+  if not n then
+    error(name .. " must be a number.")
+  end
+  return math.floor(n)
+end
+
+local function smi(n)
+  return n * 2
+end
+
+local function hexAddr(addr)
+  return string.format("%X", addr)
+end
+
+local function safeReadInteger(addr)
+  local ok, value = pcall(readInteger, addr)
+  if ok then return value end
+  return nil
+end
+
+local function safeReadDouble(addr)
+  local ok, value = pcall(readDouble, addr)
+  if ok then return value end
+  return nil
+end
+
+local function safeWrite(slot, target)
+  local ok = false
+  if slot.kind == "smi" then
+    ok = writeInteger(slot.address, smi(target))
+  elseif slot.kind == "raw" then
+    ok = writeInteger(slot.address, target)
+  elseif slot.kind == "double" then
+    ok = writeDouble(slot.address, target)
+  end
+  return ok == true
+end
+
+local function rememberOriginal(slot)
+  local key = slot.kind .. ":" .. hexAddr(slot.address)
+  if H.originals[key] ~= nil then return end
+  if slot.kind == "double" then
+    H.originals[key] = { address = slot.address, kind = slot.kind, value = safeReadDouble(slot.address) }
+  else
+    H.originals[key] = { address = slot.address, kind = slot.kind, value = safeReadInteger(slot.address) }
+  end
+end
+
+local function restoreOriginals()
+  local restored = 0
+  for _, item in pairs(H.originals) do
+    if item and item.value ~= nil then
+      if item.kind == "double" then
+        if writeDouble(item.address, item.value) then restored = restored + 1 end
+      else
+        if writeInteger(item.address, item.value) then restored = restored + 1 end
+      end
+    end
+  end
+  H.originals = {}
+  return restored
+end
+
+local function readWindow(addr)
+  local slots = {}
+  for i = -8, 8 do
+    local a = addr + (i * 4)
+    slots[#slots + 1] = { address = a, value = safeReadInteger(a), offset = i * 4 }
+  end
+  return slots
+end
+
+local function looksSmall(v)
+  return type(v) == "number" and v >= 0 and v <= 200000
+end
+
+local function equalsMoney(v, current)
+  return v == current or v == smi(current)
+end
+
+local function equalsFour(v)
+  return v == 4 or v == 8
+end
+
+local function equalsOne(v)
+  return v == 1 or v == 2
+end
+
+local function inModuleSafe(addr)
+  local ok, result = pcall(inModule, addr)
+  if ok then return result == true end
+  return false
+end
+
+local function scoreDwordAddress(addr, current, kind)
+  local score = 0
+  if not inModuleSafe(addr) then score = score + 2 end
+  if kind == "smi" then score = score + 2 end
+
+  local slots = readWindow(addr)
+  local sameCount = 0
+  local smallCount = 0
+  local tailLike = 0
+
+  for i = 1, #slots do
+    local v = slots[i].value
+    if equalsMoney(v, current) then sameCount = sameCount + 1 end
+    if looksSmall(v) then smallCount = smallCount + 1 end
+  end
+
+  for i = 1, #slots - 2 do
+    local a = slots[i].value
+    local b = slots[i + 1].value
+    local c = slots[i + 2].value
+    if equalsFour(a) and equalsFour(b) and equalsOne(c) then
+      tailLike = tailLike + 1
+    end
+  end
+
+  score = score + math.min(sameCount, 4) * 4
+  score = score + math.min(tailLike, 2) * 3
+  if smallCount >= 8 then score = score + 1 end
+  return score, sameCount, tailLike
+end
+
+local function addCandidate(candidates, seen, addr, kind, score, source)
+  local key = kind .. ":" .. hexAddr(addr)
+  if seen[key] then return end
+  seen[key] = true
+  candidates[#candidates + 1] = {
+    address = addr,
+    kind = kind,
+    score = score or 0,
+    source = source or kind
+  }
+end
+
+local function scanExact(vartype, valueText, alignment)
+  local ms = createMemScan()
+  local fl = createFoundList(ms)
+  local results = {}
+
+  ms.firstScan(
+    soExactValue,
+    vartype,
+    rtRounded,
+    valueText,
+    "",
+    0,
+    0x7fffffffffff,
+    "+W-C",
+    fsmAligned,
+    tostring(alignment),
+    false,
+    false,
+    false,
+    false
+  )
+
+  ms.waitTillDone()
+  fl.initialize()
+
+  local total = fl.Count
+  local limit = math.min(total, H.maxScanResultsPerKind)
+  for i = 0, limit - 1 do
+    local ok, addr = pcall(getAddress, fl.Address[i])
+    if ok and addr then
+      results[#results + 1] = addr
+    end
+  end
+
+  fl.destroy()
+  ms.destroy()
+  return results, total
+end
+
+function H.attach()
+  local opened = getOpenedProcessID()
+  if opened and opened ~= 0 then
+    log("Using currently attached process PID " .. tostring(opened) .. ".")
+    return true
+  end
+
+  local pid = getProcessIDFromProcessName(H.processName)
+  if not pid or pid == 0 then
+    error("Could not find " .. H.processName .. ". Start Sol Cesto, then attach/run this again.")
+  end
+
+  openProcess(pid)
+  log("Attached to " .. H.processName .. " PID " .. tostring(pid) .. ".")
+  return true
+end
+
+function H.clearRecords()
+  local list = getAddressList()
+  local removed = 0
+  for i = list.Count - 1, 0, -1 do
+    local rec = list[i]
+    if rec and rec.Description and rec.Description:find("^" .. H.recordPrefix) then
+      rec.destroy()
+      removed = removed + 1
+    end
+  end
+  log("Cleared " .. tostring(removed) .. " generated records.")
+end
+
+function H.findCandidates(current)
+  H.attach()
+
+  log("Scanning writable memory for current gold " .. tostring(current) .. "...")
+  local candidates = {}
+  local seen = {}
+
+  local rawResults, rawTotal = scanExact(vtDword, tostring(current), 4)
+  log("Raw 4-byte matches: " .. tostring(rawTotal) .. " (loaded " .. tostring(#rawResults) .. ").")
+
+  for _, addr in ipairs(rawResults) do
+    local score = scoreDwordAddress(addr, current, "raw")
+    addCandidate(candidates, seen, addr, "raw", score, "raw")
+  end
+
+  local smiValue = smi(current)
+  local smiResults, smiTotal = scanExact(vtDword, tostring(smiValue), 4)
+  log("V8 tagged SMI matches: " .. tostring(smiTotal) .. " (loaded " .. tostring(#smiResults) .. ").")
+
+  for _, addr in ipairs(smiResults) do
+    local score = scoreDwordAddress(addr, current, "smi")
+    addCandidate(candidates, seen, addr, "smi", score, "smi")
+  end
+
+  local doubleResults, doubleTotal = scanExact(vtDouble, tostring(current), 8)
+  log("Double matches: " .. tostring(doubleTotal) .. " (loaded " .. tostring(#doubleResults) .. ").")
+
+  for _, addr in ipairs(doubleResults) do
+    addCandidate(candidates, seen, addr, "double", 1, "double")
+  end
+
+  table.sort(candidates, function(a, b)
+    if a.score == b.score then
+      if a.kind == b.kind then return a.address < b.address end
+      return a.kind == "smi"
+    end
+    return a.score > b.score
+  end)
+
+  log("Total candidate roots: " .. tostring(#candidates) .. ".")
+  return candidates
+end
+
+local function expandCandidateRoots(candidates, rootLimit)
+  local slots = {}
+  local seen = {}
+  local roots = math.min(#candidates, rootLimit)
+  local offsets = { 0, -4, 4, -8, 8, -12, 12 }
+
+  for i = 1, roots do
+    local c = candidates[i]
+    if c.kind == "double" then
+      addCandidate(slots, seen, c.address, "double", c.score, c.source)
+    else
+      for _, off in ipairs(offsets) do
+        local a = c.address + off
+        local v = safeReadInteger(a)
+        if off == 0 or looksSmall(v) then
+          addCandidate(slots, seen, a, c.kind, c.score, c.source)
+        end
+      end
+    end
+  end
+
+  return slots
+end
+
+function H.addRecords(slots, target)
+  H.clearRecords()
+  local list = getAddressList()
+  local added = 0
+  local maxRecords = math.min(#slots, 250)
+
+  for i = 1, maxRecords do
+    local slot = slots[i]
+    local rec = list.createMemoryRecord()
+    rec.Description = string.format("%s %03d %s score=%s target=%s", H.recordPrefix, i, slot.kind, tostring(slot.score), tostring(target))
+    rec.Address = hexAddr(slot.address)
+    if slot.kind == "double" then
+      rec.Type = vtDouble
+    else
+      rec.Type = vtDword
+    end
+    rec.ShowAsHex = false
+    added = added + 1
+  end
+
+  log("Added " .. tostring(added) .. " generated records.")
+end
+
+function H.writeSlots(slots, target, remember)
+  local wrote = 0
+  for _, slot in ipairs(slots) do
+    if remember then rememberOriginal(slot) end
+    if safeWrite(slot, target) then
+      wrote = wrote + 1
+    end
+  end
+  return wrote
+end
+
+function H.stopLock()
+  if H.lockTimer then
+    H.lockTimer.destroy()
+    H.lockTimer = nil
+  end
+  H.lockSlots = {}
+  log("Money lock stopped.")
+end
+
+function H.startLock(slots, target)
+  H.stopLock()
+  H.lockSlots = slots
+  H.lockTarget = target
+  H.lockTimer = createTimer(nil, false)
+  H.lockTimer.Interval = 250
+  H.lockTimer.OnTimer = function()
+    H.writeSlots(H.lockSlots, H.lockTarget, false)
+  end
+  H.lockTimer.Enabled = true
+  log("Money lock active on " .. tostring(#slots) .. " slots at target " .. tostring(target) .. ".")
+end
+
+local function promptCurrentTarget()
+  local currentText = inputQuery("Sol Cesto gold", "Current visible/current gold value", H.defaultCurrent)
+  if not currentText then return nil end
+  local targetText = inputQuery("Sol Cesto gold", "Target gold value", H.defaultTarget)
+  if not targetText then return nil end
+  local current = asNumber(currentText, "Current gold")
+  local target = asNumber(targetText, "Target gold")
+  return current, target
+end
+
+function H.scanAndSet(lock)
+  local current, target = promptCurrentTarget()
+  if not current then return end
+
+  local limitText = inputQuery("Sol Cesto gold", "How many top candidate roots to write", tostring(H.defaultCandidateLimit))
+  if not limitText then return end
+  local rootLimit = asNumber(limitText, "Candidate limit")
+  if rootLimit < 1 then rootLimit = H.defaultCandidateLimit end
+
+  local candidates = H.findCandidates(current)
+  if #candidates == 0 then
+    showMessage("No writable memory candidates found for " .. tostring(current) .. ".")
+    return
+  end
+
+  local slots = expandCandidateRoots(candidates, rootLimit)
+  local wrote = H.writeSlots(slots, target, false)
+  H.addRecords(slots, target)
+
+  if lock then
+    H.startLock(slots, target)
+  end
+
+  showMessage("Sol Cesto heap table wrote " .. tostring(wrote) .. " slots to " .. tostring(target) .. ". Generated records were added to the address list.")
+end
+
+function H.batchTest()
+  local current, target = promptCurrentTarget()
+  if not current then return end
+
+  local batchText = inputQuery("Sol Cesto gold", "Candidate roots per batch", tostring(H.defaultBatchCandidates))
+  if not batchText then return end
+  local batchRoots = asNumber(batchText, "Batch size")
+  if batchRoots < 1 then batchRoots = H.defaultBatchCandidates end
+
+  local candidates = H.findCandidates(current)
+  if #candidates == 0 then
+    showMessage("No writable memory candidates found for " .. tostring(current) .. ".")
+    return
+  end
+
+  local index = 1
+  local batchNumber = 1
+  while index <= #candidates do
+    restoreOriginals()
+
+    local chunk = {}
+    for i = index, math.min(#candidates, index + batchRoots - 1) do
+      chunk[#chunk + 1] = candidates[i]
+    end
+
+    local slots = expandCandidateRoots(chunk, #chunk)
+    local wrote = H.writeSlots(slots, target, true)
+    H.addRecords(slots, target)
+
+    local msg = "Batch " .. tostring(batchNumber) .. " wrote " .. tostring(wrote) .. " slots to " .. tostring(target) .. ".\n\nCheck the game/store now.\n\nDid this batch work?"
+    local answer = messageDialog(msg, mtConfirmation, mbYes, mbNo, mbCancel)
+    if answer == mrYes then
+      H.originals = {}
+      H.lockSlots = slots
+      H.lockTarget = target
+      showMessage("Kept batch " .. tostring(batchNumber) .. ". You can now enable the lock entry if you want it frozen.")
+      return
+    elseif answer == mrCancel then
+      local restored = restoreOriginals()
+      showMessage("Canceled. Restored " .. tostring(restored) .. " slots from the last batch.")
+      return
+    end
+
+    index = index + batchRoots
+    batchNumber = batchNumber + 1
+  end
+
+  local restored = restoreOriginals()
+  showMessage("No batch was accepted. Restored " .. tostring(restored) .. " slots from the last batch.")
+end
+
+log("Loaded. Open/attach SolCesto.exe, then enable a table entry.")
+  ]]></LuaScript>
+</CheatTable>

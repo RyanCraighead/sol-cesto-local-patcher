@@ -1,0 +1,33 @@
+# Build output
+bin/
+obj/
+output/
+publish/
+artifacts/
+
+# .NET / Visual Studio
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+TestResults/
+*.nupkg
+
+# Debug symbols and logs
+*.pdb
+*.log
+
+# Local game/debug artifacts
+*.png
+*.jpg
+*.jpeg
+*.bmp
+*.gif
+patch_solcesto_gold.ps1
+SolCesto_gold_probe.ct
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+desktop.ini
