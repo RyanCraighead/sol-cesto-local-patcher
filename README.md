@@ -1,16 +1,18 @@
-# Sol Cesto Local Patcher and Cheat Tables
+# Sol Cesto Gold Patcher and Cheat Tables
 
-Tools for modifying a local/offline Sol Cesto build. The GUI patcher creates a separate patched copy of the game, and the Cheat Engine tables are for live attached-process testing.
+Gold-focused tools for a local/offline Sol Cesto build. The main download is a Windows gold patcher that creates a separate patched copy of the game with gold hotkeys, and the Cheat Engine tables provide live attached-process gold editing experiments.
+
+This is specifically for setting and locking Sol Cesto gold. It is not a general-purpose mod loader or full game editor.
 
 Download the ready-to-use EXE and `.CT` files from the [Releases page](https://github.com/RyanCraighead/sol-cesto-local-patcher/releases).
 
 ## Release Files
 
-- `SolCestoPatcher.exe`: self-contained Windows GUI patcher.
-- `SolCesto_live_heap_money.ct`: normal Cheat Engine table that scans/writes live memory.
-- `SolCesto_js_bridge_money.ct`: experimental Cheat Engine table that tries to set money through the NW.js JavaScript runtime.
+- `SolCestoPatcher.exe`: self-contained Windows GUI gold patcher.
+- `SolCesto_live_heap_money.ct`: recommended Cheat Engine table for scanning/writing live gold memory.
+- `SolCesto_js_bridge_money.ct`: experimental Cheat Engine table that tries to set gold through the NW.js JavaScript runtime.
 
-## Using the Patcher EXE
+## Using the Gold Patcher EXE
 
 1. Download `SolCestoPatcher.exe` from [Releases](https://github.com/RyanCraighead/sol-cesto-local-patcher/releases).
 2. Run `SolCestoPatcher.exe`.
@@ -20,14 +22,14 @@ Download the ready-to-use EXE and `.CT` files from the [Releases page](https://g
 6. Click `Create patched build`.
 7. Run `SolCesto.exe` from the patched output folder.
 
-The patched game adds these in-game hotkeys:
+The patched game adds gold hotkeys:
 
 - `F8`: set money once.
 - `F9`: toggle money lock.
 
 The money lock starts off by default.
 
-## Building the Patcher
+## Building the Gold Patcher
 
 From the repository root:
 
@@ -41,13 +43,13 @@ The EXE will be written to:
 output\SolCestoPatcher\SolCestoPatcher.exe
 ```
 
-## Using the Cheat Engine Tables
+## Using the Gold Cheat Engine Tables
 
 Start Sol Cesto first, then open Cheat Engine and load one of the `.CT` tables from [Releases](https://github.com/RyanCraighead/sol-cesto-local-patcher/releases). Accept the Lua script prompt when Cheat Engine asks.
 
 ### Recommended Table
 
-Use `SolCesto_live_heap_money.ct` first.
+Use `SolCesto_live_heap_money.ct` first. This table is the normal Cheat Engine workflow: attach to the running game, scan for the current gold value, then set or lock the gold candidates.
 
 1. Attach Cheat Engine to the running `SolCesto.exe` process, or activate `Attach to running SolCesto.exe`.
 2. Activate `Set gold once - heap scan from current value`.
@@ -60,7 +62,7 @@ Use `Stop lock and clear generated records` when done.
 
 ### Experimental JS Bridge Table
 
-Use `SolCesto_js_bridge_money.ct` only if you want to try the direct JavaScript-runtime approach.
+Use `SolCesto_js_bridge_money.ct` only if you want to try the direct JavaScript-runtime approach for gold.
 
 1. Attach Cheat Engine to the running `SolCesto.exe` process.
 2. Activate `Probe JS bridge`.
@@ -69,7 +71,7 @@ Use `SolCesto_js_bridge_money.ct` only if you want to try the direct JavaScript-
 
 ## Notes
 
-- Use these tools only with a local/offline copy you control.
+- Use these gold tools only with a local/offline copy you control.
 - The patcher does not modify the original game folder; it creates a separate patched copy.
 - If the money display changes but purchases still fail, press `F8` after reaching the menu/shop, or enable the `F9` lock.
 - Cheat Engine heap scanning can touch unrelated memory. If the game behaves strangely after testing candidates, restart the game and try a narrower batch.
