@@ -50,11 +50,7 @@ output\SolCestoPatcher\SolCestoPatcher.exe
 - The patcher does not modify the original game folder; it creates a separate patched copy.
 - If the money display changes but purchases still fail, press `F8` after reaching the menu/shop, or enable the `F9` lock.
 
-## Windows SmartScreen
 
-Windows may show `Publisher: Unknown publisher` for downloaded EXE builds because the release EXE is not Authenticode-signed.
-
-To make that Windows prompt show `Craighead Labs`, the EXE must be signed with a trusted code-signing certificate issued to Craighead Labs. Project metadata can set the file's company/product details, but it does not change the SmartScreen publisher line by itself.
 
 ## Repository Layout
 
